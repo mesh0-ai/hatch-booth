@@ -77,10 +77,16 @@ export function App() {
    * later — and a popup opened from an async continuation is the one browsers
    * block. So the window is opened FIRST, synchronously, and pointed at the
    * URL once it arrives.
+   *
+   * Not `noopener` in the features: that makes the browser return null by
+   * design, which cost us the handle and sent the backend to this window while
+   * a blank tab sat there. The opener reference is severed on the handle
+   * instead, which keeps the window and the isolation both.
    */
   async function backend() {
     setActionError(null);
-    const opened = window.open("", "_blank", "noopener");
+    const opened = window.open("", "_blank");
+    if (opened) opened.opener = null;
     try {
       const { url } = await openBackend(code);
       if (opened) opened.location.href = url;

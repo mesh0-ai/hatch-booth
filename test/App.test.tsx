@@ -254,7 +254,7 @@ describe("opening the backend", () => {
   it("opens the window inside the click, before the URL is known", async () => {
     // The popup rule: a window opened from an async continuation is blocked,
     // and the token in the URL is spent on first use and lives 60 seconds.
-    const opened = { location: { href: "" }, close: vi.fn() };
+    const opened = { location: { href: "" }, close: vi.fn(), opener: {} };
     const open = vi.fn(() => opened);
     vi.stubGlobal("open", open);
 
@@ -265,14 +265,17 @@ describe("opening the backend", () => {
     routes = [{ match: "/xano", status: 200, body: { url: "https://x.xano.io/impersonate?_ti=t" } }];
     await user.click(screen.getByRole("button", { name: "Open the backend" }));
 
-    expect(open).toHaveBeenCalledWith("", "_blank", "noopener");
+    // No "noopener" feature: it makes real browsers return null, which lands
+    // the backend in this window and leaves a blank tab behind.
+    expect(open).toHaveBeenCalledWith("", "_blank");
+    expect(opened.opener).toBeNull();
     await waitFor(() =>
       expect(opened.location.href).toBe("https://x.xano.io/impersonate?_ti=t"),
     );
   });
 
   it("closes the blank window when the mint fails", async () => {
-    const opened = { location: { href: "" }, close: vi.fn() };
+    const opened = { location: { href: "" }, close: vi.fn(), opener: {} };
     vi.stubGlobal("open", vi.fn(() => opened));
 
     respond("/api/staff/builds/K7QM2X", DEPLOYED);
