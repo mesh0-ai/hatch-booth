@@ -1,4 +1,4 @@
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../src/App.js";
@@ -287,6 +287,195 @@ describe("opening the backend", () => {
 
     await screen.findByRole("alert");
     expect(opened.close).toHaveBeenCalled();
+  });
+
+  it("offers a redeploy button beside an expired deploy", async () => {
+    // The remedy next to the problem. Staff clicked a dead backend button four
+    // times in three minutes when the sentence stood on its own.
+    const opened = { location: { href: "" }, close: vi.fn(), opener: {} };
+    vi.stubGlobal("open", vi.fn(() => opened));
+
+    respond("/api/staff/builds/K7QM2X", DEPLOYED);
+    const user = await find();
+    await screen.findByRole("button", { name: "Open the backend" });
+
+    routes = [
+      {
+        match: "/xano",
+        status: 410,
+        body: { code: "deploy_expired", message: "This deploy has expired." },
+      },
+    ];
+    await user.click(screen.getByRole("button", { name: "Open the backend" }));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("This deploy has expired.");
+    expect(within(alert).getByRole("button", { name: "Redeploy" })).toBeInTheDocument();
+  });
+
+  it("stops calling an expired environment live", async () => {
+    // A LIVE badge over "this deploy has expired" is the screen disagreeing
+    // with itself while a visitor reads both.
+    const opened = { location: { href: "" }, close: vi.fn(), opener: {} };
+    vi.stubGlobal("open", vi.fn(() => opened));
+
+    respond("/api/staff/builds/K7QM2X", DEPLOYED);
+    const user = await find();
+    await screen.findByRole("button", { name: "Open the backend" });
+    expect(screen.getByText("Live")).toBeInTheDocument();
+
+    routes = [
+      {
+        match: "/xano",
+        status: 410,
+        body: { code: "deploy_expired", message: "This deploy has expired." },
+      },
+    ];
+    await user.click(screen.getByRole("button", { name: "Open the backend" }));
+
+    await screen.findByRole("alert");
+    expect(screen.queryByText("Live")).not.toBeInTheDocument();
+    expect(screen.getByText("Expired")).toBeInTheDocument();
+  });
+
+  it("offers no redeploy button beside a failure redeploying cannot fix", async () => {
+    // A 502 is our lost scope or Xano being down. A button offered against
+    // every failure would train staff to press it at things it cannot fix.
+    const opened = { location: { href: "" }, close: vi.fn(), opener: {} };
+    vi.stubGlobal("open", vi.fn(() => opened));
+
+    respond("/api/staff/builds/K7QM2X", DEPLOYED);
+    const user = await find();
+    await screen.findByRole("button", { name: "Open the backend" });
+
+    routes = [
+      { match: "/xano", status: 502, body: { code: "internal", message: "Could not open it." } },
+    ];
+    await user.click(screen.getByRole("button", { name: "Open the backend" }));
+
+    const alert = await screen.findByRole("alert");
+    expect(within(alert).queryByRole("button", { name: "Redeploy" })).not.toBeInTheDocument();
+    expect(screen.getByText("Live")).toBeInTheDocument();
+  });
+
+  it("redeploys from that button and clears the expiry", async () => {
+    const opened = { location: { href: "" }, close: vi.fn(), opener: {} };
+    vi.stubGlobal("open", vi.fn(() => opened));
+
+    respond("/api/staff/builds/K7QM2X", DEPLOYED);
+    const user = await find();
+    await screen.findByRole("button", { name: "Open the backend" });
+
+    routes = [
+      {
+        match: "/xano",
+        status: 410,
+        body: { code: "deploy_expired", message: "This deploy has expired." },
+      },
+    ];
+    await user.click(screen.getByRole("button", { name: "Open the backend" }));
+    await screen.findByRole("alert");
+
+    const fresh = { ...DEPLOYED.deploy!, siteUrl: "https://fresh.dev.xano.io" };
+    routes = [
+      { match: "/reset", status: 200, body: { ok: true } },
+      { match: "/redeploy", status: 200, body: fresh },
+      { match: "/api/staff/builds/K7QM2X", status: 200, body: { ...DEPLOYED, deploy: fresh } },
+    ];
+    await user.click(screen.getByRole("button", { name: "Redeploy" }));
+
+    await screen.findByRole("link", { name: "https://fresh.dev.xano.io" });
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(screen.getByText("Live")).toBeInTheDocument();
+  });
+
+  it("drops the dead row first, or the redeploy returns it right back", async () => {
+    /*
+     * POST /redeploy is idempotent: with a row present it answers 200 carrying
+     * the environment that is already there, having deployed nothing. On an
+     * expired one that reads as a button that does nothing — which is exactly
+     * what it did. Reset is what drops the row, and it must come first.
+     */
+    const opened = { location: { href: "" }, close: vi.fn(), opener: {} };
+    vi.stubGlobal("open", vi.fn(() => opened));
+
+    respond("/api/staff/builds/K7QM2X", DEPLOYED);
+    const user = await find();
+    await screen.findByRole("button", { name: "Open the backend" });
+
+    routes = [
+      {
+        match: "/xano",
+        status: 410,
+        body: { code: "deploy_expired", message: "This deploy has expired." },
+      },
+    ];
+    await user.click(screen.getByRole("button", { name: "Open the backend" }));
+    await screen.findByRole("alert");
+
+    const fresh = { ...DEPLOYED.deploy!, siteUrl: "https://fresh.dev.xano.io" };
+    routes = [
+      { match: "/reset", status: 200, body: { ok: true } },
+      { match: "/redeploy", status: 200, body: fresh },
+      { match: "/api/staff/builds/K7QM2X", status: 200, body: { ...DEPLOYED, deploy: fresh } },
+    ];
+    calls = [];
+    await user.click(screen.getByRole("button", { name: "Redeploy" }));
+    await screen.findByRole("link", { name: "https://fresh.dev.xano.io" });
+
+    const paths = calls.map((c) => c.url);
+    expect(paths[0]).toContain("/reset");
+    expect(paths[1]).toContain("/redeploy");
+  });
+
+  it("does not reset when deploying a build that has no environment", async () => {
+    // Reset is destructive and this path has nothing to drop. It must stay a
+    // single call — the guard only exists for the expiry.
+    respond("/api/staff/builds/K7QM2X", BUILD);
+    const user = await find();
+    await screen.findByRole("button", { name: "Deploy it" });
+
+    routes = [
+      { match: "/redeploy", status: 200, body: DEPLOYED.deploy },
+      { match: "/api/staff/builds/K7QM2X", status: 200, body: DEPLOYED },
+    ];
+    calls = [];
+    await user.click(screen.getByRole("button", { name: "Deploy it" }));
+    await screen.findByRole("link", { name: DEPLOYED.deploy!.siteUrl });
+
+    expect(calls.some((c) => c.url.includes("/reset"))).toBe(false);
+  });
+
+  it("keeps counting on the redeploy button rather than unmounting it", async () => {
+    // Clearing the error on the way in would take the button — and the running
+    // count — out from under the finger that just pressed it.
+    const opened = { location: { href: "" }, close: vi.fn(), opener: {} };
+    vi.stubGlobal("open", vi.fn(() => opened));
+
+    respond("/api/staff/builds/K7QM2X", DEPLOYED);
+    const user = await find();
+    await screen.findByRole("button", { name: "Open the backend" });
+
+    routes = [
+      {
+        match: "/xano",
+        status: 410,
+        body: { code: "deploy_expired", message: "This deploy has expired." },
+      },
+    ];
+    await user.click(screen.getByRole("button", { name: "Open the backend" }));
+    await screen.findByRole("alert");
+
+    let release: (() => void) | undefined;
+    const held = new Promise<void>((r) => (release = r));
+    vi.stubGlobal("fetch", async () => {
+      await held;
+      return new Response(JSON.stringify(DEPLOYED.deploy), { status: 200 });
+    });
+    await user.click(screen.getByRole("button", { name: "Redeploy" }));
+
+    expect(await screen.findByRole("button", { name: /Deploying/ })).toBeDisabled();
+    release!();
   });
 
   it("offers no backend button when the deploy named no tenant", async () => {

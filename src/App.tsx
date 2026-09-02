@@ -13,6 +13,12 @@ import {
 } from "./lib/api.js";
 import type { StaffBuild } from "./lib/types.js";
 
+/** What a failed action leaves on screen: Hatch's stable code, and prose. */
+export interface ApiFailure {
+  code: string;
+  message: string;
+}
+
 /**
  * The whole dashboard: one screen, three states.
  *
@@ -28,7 +34,12 @@ export function App() {
   const [build, setBuild] = useState<StaffBuild | null>(null);
   const [pending, setPending] = useState(false);
   const [lookupError, setLookupError] = useState<string | null>(null);
-  const [actionError, setActionError] = useState<string | null>(null);
+  /**
+   * The code as well as the prose, because one code changes what the panel
+   * offers: `deploy_expired` is the only failure here with a remedy on screen,
+   * and the panel puts Redeploy next to it. Everything else is prose to read.
+   */
+  const [actionError, setActionError] = useState<ApiFailure | null>(null);
 
   /**
    * The code as staff typed it, held so every later action can address the
@@ -46,21 +57,41 @@ export function App() {
       setCode(entered);
       setBuild(found);
     } catch (err) {
-      setLookupError(describe(err, "That code did not match a build."));
+      setLookupError(describe(err, "That code did not match a build.").message);
     } finally {
       setPending(false);
     }
   }
 
+  /**
+   * Deploy, replacing a dead environment when that is what is on screen.
+   *
+   * `POST /redeploy` is idempotent by design: with an environment already on
+   * the row it returns that one rather than minting a second tenant for a
+   * double-click. Right until the environment has expired, when returning it
+   * makes the button look broken — it answers 200, the panel re-reads the same
+   * dead deploy, and nothing on screen moves.
+   *
+   * So an expiry resets first, which is the gesture that drops the row, and is
+   * what staff were already doing by hand between the two presses. Reset is
+   * safe on a tenant Xano has already collected: Hatch drops the row whether or
+   * not the teardown reaches anything.
+   */
   async function deploy() {
+    const replacing = actionError?.code === "deploy_expired";
     setPending(true);
-    setActionError(null);
     try {
+      if (replacing) await resetBuild(code);
       await redeployBuild(code);
       // Re-read rather than merging the response in: the lookup is the one
       // description of this build, and a screen assembled from two sources is
       // a screen that can disagree with itself.
       setBuild(await fetchBuild(code));
+      // Cleared here and not on the way in. An expiry renders its own Redeploy
+      // button, so clearing first would unmount the control under the finger
+      // that pressed it — and take the running second-count with it. The error
+      // is what this call is answering; it goes when the answer arrives.
+      setActionError(null);
     } catch (err) {
       setActionError(describe(err, "The redeploy did not work."));
     } finally {
@@ -175,14 +206,19 @@ function Misconfigured() {
 }
 
 /** Hatch's prose when it sent some, and something a person can act on when not. */
-function describe(err: unknown, fallback: string): string {
+function describe(err: unknown, fallback: string): ApiFailure {
   if (err instanceof StaffApiError) {
-    if (err.code === "unreachable") return err.message;
+    if (err.code === "unreachable") return { code: err.code, message: err.message };
     // 404 covers both "no such code" and "wrong token". The token is known
     // present by here, so the code is the likelier of the two — but saying so
     // without hedging would have staff retyping a good code at a visitor.
-    if (err.status === 404) return "No build for that code. Check the token if it keeps happening.";
-    return err.message;
+    if (err.status === 404) {
+      return {
+        code: err.code,
+        message: "No build for that code. Check the token if it keeps happening.",
+      };
+    }
+    return { code: err.code, message: err.message };
   }
-  return fallback;
+  return { code: "internal", message: fallback };
 }

@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import type { ApiFailure } from "../App.js";
 import type { StaffBuild, StaffDeploy } from "../lib/types.js";
 import { describeDuration } from "../lib/format.js";
 import { Badge } from "./ui/badge.js";
@@ -17,6 +18,13 @@ import { Card, CardBody, CardHeader, CardLabel } from "./ui/card.js";
  * button. It is the normal state of every build made before Hatch started
  * keeping source, and a greyed-out control with no reason beside it reads as
  * something broken.
+ *
+ * The same rule covers the expired environment. An ephemeral lives about an
+ * hour, so a build staff come back to after lunch answers `deploy_expired` on
+ * the backend button — and that sentence alone left them clicking the same
+ * dead button, four times in three minutes at the booth. It is the one failure
+ * here whose remedy is on screen, so the remedy goes NEXT TO the sentence
+ * rather than a scroll away, and the panel stops claiming to be live.
  */
 export function DeployPanel({
   build,
@@ -30,20 +38,32 @@ export function DeployPanel({
   /** Must run the fetch AND the window.open in one handler — see App. */
   onOpenBackend: () => void;
   pending: boolean;
-  error: string | null;
+  error: ApiFailure | null;
 }) {
   const deploy = build.deploy;
+  /*
+   * Hatch is the only thing that knows. The row survives expiry and carries no
+   * end time, and a clock counting down from `deployedAt` would be a guess the
+   * screen states as fact. So the panel learns this the moment a click asks
+   * Xano and Xano says the tenant is gone — late, but never wrong.
+   */
+  const expired = error?.code === "deploy_expired";
 
   return (
-    <Card className={deploy ? "border-deck-blue/40 bg-deck-blue-soft" : undefined}>
-      <CardHeader className={deploy ? "border-deck-blue/25" : undefined}>
+    <Card className={deploy && !expired ? "border-deck-blue/40 bg-deck-blue-soft" : undefined}>
+      <CardHeader className={deploy && !expired ? "border-deck-blue/25" : undefined}>
         <CardLabel>Demo environment</CardLabel>
-        {deploy && <Badge variant="live">Live</Badge>}
+        {deploy && <Badge variant={expired ? "muted" : "live"}>{expired ? "Expired" : "Live"}</Badge>}
       </CardHeader>
 
       <CardBody>
         {deploy ? (
-          <LiveEnvironment deploy={deploy} onOpenBackend={onOpenBackend} pending={pending} />
+          <LiveEnvironment
+            deploy={deploy}
+            onOpenBackend={onOpenBackend}
+            pending={pending}
+            expired={expired}
+          />
         ) : !build.redeployable ? (
           <NotRedeployable state={build.state} />
         ) : (
@@ -60,9 +80,20 @@ export function DeployPanel({
         )}
 
         {error !== null && (
-          <p role="alert" className="mt-3 text-[13px] text-deck-halt">
-            {error}
-          </p>
+          <div role="alert" className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-2">
+            <p className="text-[13px] text-deck-halt">{error.message}</p>
+            {/*
+              The remedy, beside the problem. Only for the expiry: every other
+              failure here is a fault where deploying again is a guess, and a
+              button offered against all of them would train staff to press it
+              at things it cannot fix.
+            */}
+            {expired && (
+              <Button onClick={onRedeploy} disabled={pending} size="sm">
+                {pending ? <Elapsed /> : "Redeploy"}
+              </Button>
+            )}
+          </div>
         )}
       </CardBody>
     </Card>
@@ -73,10 +104,12 @@ function LiveEnvironment({
   deploy,
   onOpenBackend,
   pending,
+  expired,
 }: {
   deploy: StaffDeploy;
   onOpenBackend: () => void;
   pending: boolean;
+  expired: boolean;
 }) {
   return (
     <div className="flex flex-col gap-3">
@@ -97,7 +130,17 @@ function LiveEnvironment({
           no button — the same rule the public done screen follows.
         */}
         {deploy.tenantName !== undefined && (
-          <Button onClick={onOpenBackend} disabled={pending}>
+          /*
+            Demoted, not removed, once the tenant is gone. There is one solid
+            blue control on this screen and it is what to do next — which after
+            an expiry is Redeploy, below. Removing this instead would move the
+            layout under a hand that is already reaching for it.
+          */
+          <Button
+            onClick={onOpenBackend}
+            disabled={pending}
+            variant={expired ? "outline" : "default"}
+          >
             Open the backend
           </Button>
         )}
@@ -109,7 +152,9 @@ function LiveEnvironment({
       </div>
 
       <p className="text-[12px] leading-[1.5] text-deck-text-faint">
-        Read-only, and it expires on its own in about an hour. Reset takes it away now.
+        {expired
+          ? "This environment is gone. Redeploying makes a fresh one, and the site link above changes with it."
+          : "Read-only, and it expires on its own in about an hour. Reset takes it away now."}
       </p>
     </div>
   );
